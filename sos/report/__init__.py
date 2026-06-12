@@ -927,11 +927,13 @@ class SoSReport(SoSComponent):
             opts = {}
             for opt in self.opts.plugopts:
                 try:
-                    opt, val = opt.split("=")
+                    opt, val = opt.split("=", 1)
                 except ValueError:
                     val = True
 
+                opt = opt.strip()
                 if isinstance(val, str):
+                    val = val.strip()
                     arg = val.lower()
                     if arg in ["on", "enable", "enabled", "true", "yes"]:
                         val = True
@@ -1099,7 +1101,7 @@ class SoSReport(SoSComponent):
                     tmpopt = 0
 
                 self.ui_log.info(f" {f'{opt.plugin}.{opt.name}':<40} "
-                                 f"{tmpopt:<15} {opt.desc}")
+                                 f"{tmpopt:<22} {opt.desc}")
         else:
             self.ui_log.info(_("No plugin options available."))
 

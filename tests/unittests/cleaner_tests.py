@@ -302,6 +302,14 @@ class CleanerParserTests(unittest.TestCase):
         self.assertNotEqual(t4, t4_test,
                             f"Parser did not match and obfuscate '{t4}'")
 
+    def test_ipv6_parser_uppercase_hex(self):
+        line = 'testing 2001:DB8::ABCD as an uppercase address'
+        _test = self.ipv6_parser.parse_line(line)[0]
+        self.assertNotEqual(
+            line, _test,
+            f"Parser did not match and obfuscate '{line}'"
+        )
+
     def test_ipv6_no_match_signature(self):
         modstr = '2D:4F:6E:55:4F:E8:5E:D2:D2:A3:73:62:AB:FD:F9:C5:A5:53:31:93'
         mod_test = self.ipv6_parser.parse_line(modstr)[0]
@@ -325,6 +333,36 @@ class CleanerParserTests(unittest.TestCase):
         line = "but foo is too short username"
         _test = self.uname_parser.parse_line(line)[0]
         self.assertEqual(line, _test)
+
+    def test_keyword_parser_all_keywords_obfuscated(self):
+        for kw in ('alpha', 'beta', 'gamma'):
+            self.kw_parser.mapping.add(kw)
+        self.kw_parser.generate_item_regexes()
+        line = 'alpha beta gamma all appear here'
+        result = self.kw_parser.parse_line(line)[0]
+        for kw in ('alpha', 'beta', 'gamma'):
+            self.assertNotIn(kw, result,
+                             f"Keyword '{kw}' was not obfuscated in: {result}")
+
+    def test_keyword_parser_multiple_keywords_consistent(self):
+        for kw in ('alpha', 'beta', 'gamma'):
+            self.kw_parser.mapping.add(kw)
+        self.kw_parser.generate_item_regexes()
+        line = 'alpha beta gamma'
+        first = self.kw_parser.parse_line(line)[0]
+        second = self.kw_parser.parse_line(line)[0]
+        self.assertEqual(first, second,
+                         "Obfuscation was not consistent across calls")
+
+    def test_username_parser_all_usernames_obfuscated(self):
+        for name in ('alice', 'bobsmith', 'charlie'):
+            self.uname_parser.mapping.add(name)
+        line = 'alice bobsmith charlie were all logged in'
+        result = self.uname_parser.parse_line(line)[0]
+        for name in ('alice', 'bobsmith', 'charlie'):
+            self.assertNotIn(name, result,
+                             f"Username '{name}' was not obfuscated in:"
+                             f" {result}")
 
 
 class PrepperTests(unittest.TestCase):
@@ -357,6 +395,88 @@ class PrepperTests(unittest.TestCase):
             ['cleanertest'],
             self.host_prepper.get_items_for_map('hostname', self.archive)
         )
+
+    def test_hostname_prepper_etc_hosts_short_name_in_items(self):
+        """Short hostnames from /etc/hosts must appear in items so that
+        mapping.add() is called and self.hosts is populated, allowing proper
+        obfuscation."""
+        class MockArchive:
+            is_sos = True
+            is_insights = False
+
+            def get_file_content(self, path):
+                if path == 'sos_commands/host/hostname_-f':
+                    return 'myhost.example.com'
+                if path == 'etc/hosts':
+                    return ('192.168.1.100 other.example.com otherhost\n'
+                            '10.0.0.1 shortonly\n')
+                return ''
+
+        items = self.host_prepper.get_items_for_map('hostname', MockArchive())
+        self.assertIn('otherhost', items,
+                      'Short hostname from /etc/hosts must be in items')
+        self.assertIn('shortonly', items,
+                      'Short-name-only /etc/hosts entry must be in items')
+
+    def test_hostname_prepper_etc_hosts_short_name_obfuscated(self):
+        """Verify that short hostnames added from /etc/hosts are actually
+        obfuscated during file parsing."""
+        workdir = join(sos.policies.load().get_tmp_dir(None),
+                       'sos_avocado_testing')
+
+        class MockArchive:
+            is_sos = True
+            is_insights = False
+
+            def get_file_content(self, path):
+                if path == 'sos_commands/host/hostname_-f':
+                    return 'myhost.example.com'
+                if path == 'etc/hosts':
+                    return '10.0.0.1 shortonly\n'
+                return ''
+
+        prepper = HostnamePrepper(SoSOptions(domains=[]))
+        items = prepper.get_items_for_map('hostname', MockArchive())
+        parser = SoSHostnameParser(config={}, workdir=workdir)
+        for item in items:
+            parser.mapping.add(item)
+        for ritem in prepper.regex_items['hostname']:
+            parser.mapping.add_regex_item(ritem)
+        parser.generate_item_regexes()
+
+        line = 'connected to shortonly for configuration'
+        result = parser.parse_line(line)[0]
+        self.assertNotEqual(line, result,
+                            'Short hostname from /etc/hosts was not '
+                            'obfuscated')
+        self.assertNotIn('shortonly', result,
+                         'shortonly still present after obfuscation')
+
+    def test_hostname_prepper_etc_hosts_inline_comment_stripped(self):
+        """Inline comments in /etc/hosts lines must not be treated as
+        hostnames."""
+        class MockArchive:
+            is_sos = True
+            is_insights = False
+
+            def get_file_content(self, path):
+                if path == 'sos_commands/host/hostname_-f':
+                    return 'myhost.example.com'
+                if path == 'etc/hosts':
+                    return '192.168.1.100 otherhost # production server\n'
+                return ''
+
+        items = self.host_prepper.get_items_for_map('hostname', MockArchive())
+        self.assertNotIn('production', items,
+                         'Comment word "production" must not be treated as a '
+                         'hostname')
+        self.assertNotIn('server', items,
+                         'Comment word "server" must not be treated as a '
+                         'hostname')
+        self.assertNotIn('production',
+                         self.host_prepper.regex_items['hostname'],
+                         'Comment word "production" must not be in '
+                         'regex_items')
 
     def test_ipv4_prepper_parser_files(self):
         self.assertEqual(

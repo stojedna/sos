@@ -18,6 +18,11 @@ class SoSIPv6Parser(SoSCleanerParser):
 
     name = 'IPv6 Parser'
     map_file_key = 'ipv6_map'
+    # Cheap pre-filter: "::" (compressed) or "hex:hex:" (full form).
+    # Every valid IPv6 address contains at least one of these substrings.
+    _quick_check = re.compile(
+        r'::|[0-9a-f]{1,4}:[0-9a-f]{1,4}:', re.I
+    )
     regex_pattern = re.compile(
         # Attention: note that this is a single long regex, not several entries
         # This is initially based off of two regexes from the Java library
@@ -26,9 +31,12 @@ class SoSIPv6Parser(SoSCleanerParser):
         # is not extracted from a log message such as 'SomeFuncUsed::ADiffFunc'
         # that come components may log with. Further, we optionally try to grab
         # a trailing prefix for the network bits.
-        r"(?<![:\\.\\-a-z0-9])((([0-9a-f]{1,4})(:[0-9a-f]{1,4}){7})|"
-        r"(([0-9a-f]{1,4}(:[0-9a-f]{0,4}){0,5}))([^.])::(([0-9a-f]{1,4}"
-        r"(:[0-9a-f]{1,4}){0,5})?)(\/\d{1,3})?)(?!([a-z0-9]|:[a-z0-9]))"
+        r"(?<![:\\.\\-a-zA-Z0-9])"
+        r"((([0-9a-fA-F]{1,4})(:[0-9a-fA-F]{1,4}){7})|"
+        r"(([0-9a-fA-F]{1,4}(:[0-9a-fA-F]{0,4}){0,5}))"
+        r"([^.])::(([0-9a-fA-F]{1,4}"
+        r"(:[0-9a-fA-F]{1,4}){0,5})?)(\/\d{1,3})?)"
+        r"(?!([a-zA-Z0-9]|:[a-zA-Z0-9]))"
     )
     parser_skip_files = [
         'etc/dnsmasq.conf.*',
@@ -36,8 +44,13 @@ class SoSIPv6Parser(SoSCleanerParser):
     ]
     compile_regexes = False
 
+    def _parse_line(self, line):
+        if not self._quick_check.search(line):
+            return line, 0
+        return super()._parse_line(line)
+
     def __init__(self, config, workdir, skip_cleaning_files=[]):
-        self.mapping = SoSIPv6Map(workdir)
+        self.mapping = SoSIPv6Map(workdir, self.regex_pattern)
         super().__init__(config, skip_cleaning_files)
 
     def get_map_contents(self):

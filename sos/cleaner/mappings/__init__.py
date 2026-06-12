@@ -28,19 +28,30 @@ class SoSMap():
     compile_regexes = True
     ignore_short_items = False
     match_full_words_only = False
+    # When True, use set-based token lookup instead of compiled_search regex
+    # for the pre-filter in _parse_line_with_compiled_regexes.
+    # Suitable for parsers with simple word items (username, keyword).
+    use_token_lookup = False
 
-    def __init__(self, workdir):
+    _token_split_re = re.compile(r'[^a-z0-9]+')
+
+    def __init__(self, workdir, _static_regex=re.compile(r'(?!)')):
         self.initializing = True
         self.dataset = {}
         self._regexes_made = set()
         self.compiled_regexes = []
         self.compiled_search = re.compile('(?!)')  # no match
+        self._simple_tokens = set()
+        self._complex_items = []
+        self._regex_dict = {}
+        self._static_regex = _static_regex
         self.cname = self.__class__.__name__.lower()
         # workdir's default value '/tmp' is used just by avocado tests,
         # otherwise we override it to /etc/sos/cleaner (or map_file dir)
         self.workdir = workdir
         self.cache_dir = os.path.join(self.workdir, 'cleaner_cache',
                                       self.cname)
+        self.cache_counter = 0  # number of expected items in cache_dir
         self.load_entries()
         self.initializing = False
         self.generate_compiled_regexes()
@@ -59,7 +70,7 @@ class SoSMap():
         """
 
         Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
-        self.load_new_entries_from_dir(1)
+        self.load_new_entries_from_dir()
 
     def ignore_item(self, item):
         """Some items need to be completely ignored, for example link-local or
@@ -87,27 +98,26 @@ class SoSMap():
         if self.compile_regexes:
             self.add_regex_item(item)
 
-    def load_new_entries_from_dir(self, counter):
-        # this is a performance hack; there can be gaps in counter values as
-        # e.g. sanitised item #14 is an IP address (in file) while item #15
-        # is its network (in dataset but not in files). So the next file
-        # number is 16. The diffs should be at most 2, the above is so far
-        # the only type of "underneath dataset growth". But let be
-        # conservative and test next 5 numbers "only".
-        no_files_cnt = 5
-        while no_files_cnt > 0:
-            fname = os.path.join(self.cache_dir, f"{counter}")
-            while os.path.isfile(fname):
-                no_files_cnt = 5
-                with open(fname, 'r', encoding='utf-8') as f:
-                    item = f.read()
-                if not self.dataset.get(item, False):
-                    self.add_sanitised_item_to_dataset(item)
-                counter += 1
-                fname = os.path.join(self.cache_dir, f"{counter}")
-            # no next file, but try a new next ones until no_files_cnt==0
-            no_files_cnt -= 1
-            counter += 1
+    def load_new_entries_from_dir(self):
+        # Load all new items from the cache_dir. "New" = any numbered file not
+        # lower than self.cache_counter.
+        # The ">=" is essential for calls from self.add(item) / FileExistsError
+        # Update self.cache_counter at the end.
+        with os.scandir(self.cache_dir) as it:
+            num_files = [
+                f.name
+                for f in it
+                if f.name.isdigit() and int(f.name) >= self.cache_counter
+            ]
+        num_files.sort(key=int)
+        for file_name in num_files:
+            fname = os.path.join(self.cache_dir, file_name)
+            with open(fname, 'r', encoding='utf-8') as f:
+                item = f.read()
+            if not self.dataset.get(item, False):
+                self.add_sanitised_item_to_dataset(item)
+        if num_files:
+            self.cache_counter = int(num_files[-1])  # last/biggest number
 
     def add(self, item):
         """Add a particular item to the map, generating an obfuscated pair
@@ -128,12 +138,13 @@ class SoSMap():
                 with open(tmpfile.name, 'w', encoding='utf-8') as f:
                     f.write(item)
             try:
-                counter = len(self.dataset) + 1
-                os.link(tmpfile.name, os.path.join(self.cache_dir,
-                                                   f"{counter}"))
+                self.cache_counter += 1
+                os.link(tmpfile.name,
+                        os.path.join(self.cache_dir,
+                                     f"{self.cache_counter}"))
                 self.add_sanitised_item_to_dataset(item)
             except FileExistsError:
-                self.load_new_entries_from_dir(counter)
+                self.load_new_entries_from_dir()
 
         return self.dataset[item]
 
@@ -146,7 +157,10 @@ class SoSMap():
         """
         if self.ignore_item(item):
             return
-        if item not in self._regexes_made:
+        # skip items already in the _regexes_made set and items detected by
+        # parser._parse_line via the static regex_pattern
+        if (item not in self._regexes_made and
+                not self._static_regex.fullmatch(item)):
             # we do re.I everywhere, so unify the item
             item = item.lower()
             # save the item in a set to avoid clobbering existing regexes,
@@ -164,21 +178,71 @@ class SoSMap():
             # from scratch every time we add something like we would do if we
             # tracked/saved the item and the Pattern() object in a dict or in
             # the set above
-            self.compiled_regexes.append((item, self.get_regex_result(item)))
-            self.compiled_regexes.sort(key=lambda x: len(x[0]), reverse=True)
-            self.generate_compiled_regexes(only_search=True)
+            _reg = self.get_regex_result(item)
+            if self.use_token_lookup:
+                self._regex_dict[item] = _reg
+                if item.isalnum():
+                    self._simple_tokens.add(item)
+                else:
+                    self._complex_items.append(item)
+            else:
+                self.compiled_regexes.append((item, _reg))
+                self.compiled_regexes.sort(
+                    key=lambda x: len(x[0]), reverse=True)
+                self.generate_compiled_regexes(only_search=True)
 
     def generate_compiled_regexes(self, only_search=False):
         keys = sorted(self._regexes_made, key=len, reverse=True)
-        if not only_search:
-            self.compiled_regexes = [
-                (item, self.get_regex_result(item)) for item in keys
+        if self.use_token_lookup:
+            if not only_search:
+                self._regex_dict = {
+                    item: self.get_regex_result(item) for item in keys
+                }
+            self._simple_tokens = {
+                item for item in self._regexes_made if item.isalnum()
+            }
+            self._complex_items = [
+                item for item in self._regexes_made if not item.isalnum()
             ]
-        pattern = "|".join([f'{self.get_regex_escape(k)}' for k in keys])
-        self.compiled_search = re.compile(
-            self.get_regex_fullword(pattern),
-            flags=re.I
-        )
+        else:
+            if not only_search:
+                self.compiled_regexes = [
+                    (item, self.get_regex_result(item)) for item in keys
+                ]
+            pattern = "|".join([f'{self.get_regex_escape(k)}' for k in keys])
+            self.compiled_search = re.compile(
+                self.get_regex_fullword(pattern),
+                flags=re.I
+            )
+
+    def get_matched_items(self, line):
+        """Return (item, regex) pairs for items that match in the line.
+
+        For token-lookup maps, returns only the specific items found via
+        set intersection / substring matching, rather than the full
+        compiled_regexes list.
+
+        For regex-based maps, falls back to returning all compiled_regexes
+        when compiled_search matches (original behavior).
+        """
+        if self.use_token_lookup:
+            line_lower = line.lower()
+            tokens = set(self._token_split_re.split(line_lower))
+            tokens.discard('')
+
+            result = []
+            for item in tokens & self._simple_tokens:
+                result.append((item, self._regex_dict[item]))
+            for item in self._complex_items:
+                if item in line_lower:
+                    result.append((item, self._regex_dict[item]))
+
+            if len(result) > 1:
+                result.sort(key=lambda x: len(x[0]), reverse=True)
+            return result
+        if self.compiled_search.search(line):
+            return self.compiled_regexes
+        return []
 
     def get_regex_escape(self, item):
         return rf'{re.escape(item)}'
@@ -194,7 +258,7 @@ class SoSMap():
         over pre-generated regexes during parse_line(). For most parsers this
         will simply be a ``re.Pattern()`` object, but for more complex parsers
         this can be overridden to provide a different object, e.g. a tuple,
-        for that parer's specific iteration needs.
+        for that parser's specific iteration needs.
 
         :param item:    The unobfuscated string to generate the regex for
         :type item:     ``str``
