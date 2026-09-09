@@ -12,6 +12,7 @@ sos_report \- Collect and package diagnostic and support data
           [--no-report] [--config-file conf]\fR
           [--no-postproc]\fR
           [--preset preset] [--add-preset add_preset]\fR
+          [--note note]\fR
           [--del-preset del_preset] [--desc description]\fR
           [--batch] [--build] [--debug] [--dry-run]\fR
           [--estimate-only] [--label label] [--case-id id]\fR
@@ -28,13 +29,16 @@ sos_report \- Collect and package diagnostic and support data
           [--verify]\fR
           [--log-size]\fR
           [--journal-size]\fR
+          [--no-env-vars]\fR
           [--all-logs]\fR
           [--since YYYYMMDD[HHMMSS]]\fR
           [--skip-commands commands]\fR
           [--skip-files files]\fR
+          [--pack-dir directories]\fR
           [--allow-system-changes]\fR
           [--low-priority]\fR
           [-z|--compression-type method]\fR
+          [--clean|--mask]\fR
           [--encrypt]\fR
           [--encrypt-key KEY]\fR
           [--encrypt-pass PASS]\fR
@@ -42,6 +46,12 @@ sos_report \- Collect and package diagnostic and support data
           [--upload-directory dir] [--upload-pass pass]\fR
           [--upload-no-ssl-verify] [--upload-method]\fR
           [--upload-protocol protocol]\fR
+          [--upload-s3-endpoint endpoint]\fR
+          [--upload-s3-region region]\fR
+          [--upload-s3-bucket bucket]\fR
+          [--upload-s3-access-key key]\fR
+          [--upload-s3-secret-key key]\fR
+          [--upload-s3-object-prefix prefix]\fR
           [--experimental]\fR
           [-h|--help]\fR
 
@@ -151,6 +161,13 @@ Display a list of available presets and what options they carry.
 When using \fB--add-preset\fR use this option to add a description of the preset
 that will be displayed when using \fB--list-presets\fR.
 .TP
+.B \--note NOTE
+When using \fB--add-preset\fR, use this option to add a behaviour note to the preset
+that will be displayed when using \fB--list-presets\fR.
+
+This is useful for documenting specific behaviours, caveats, or use-cases for the preset
+beyond the basic description.
+.TP
 .B \-s, \--sysroot SYSROOT
 Specify an alternate root file system path. Useful for collecting
 reports from containers and images.
@@ -213,6 +230,14 @@ Tell plugins to collect all possible log data ignoring any size limits
 and including logs in non-default locations. This option may significantly
 increase the size of reports.
 .TP
+.B \--no-env-vars
+Do not collect environment variables in the report.
+
+By default, sos report collects environment variables from the system which may contain
+sensitive information. Use this option to exclude environment variable collection for
+privacy or security reasons. Note that this may limit the usefulness of the report for
+debugging environment-related issues.
+.TP
 .B \--since YYYYMMDD[HHMMSS]
 Limits the collection of log archives to those newer than this date. A log
 archive is any file not found in /etc, that has either a numeric or a
@@ -232,6 +257,16 @@ A comma delimited list of files or filepath wildcard matches to skip collection
 of. Values may either be exact filepaths or paths using UNIX shell-style wildcards,
 for example \fB/etc/sos/*\fR.
 .TP
+.B \--pack-dir DIRECTORIES
+A comma delimited list of collected directories to replace with a single tarball
+within the report, for example \fB/proc/fs/\fR. The named directory is packed into
+an uncompressed tarball alongside it (e.g. \fBproc/fs/\fR becomes \fBproc/fs.tar\fR)
+and the original tree is removed; the rest of the report is unchanged. This is
+useful for verbose trees containing very large numbers of small files, where
+extracting the report would otherwise have to recreate every file on disk. The
+tarball is not compressed here since the whole report is compressed when packaged.
+Directories not collected as a directory are skipped. May be repeated.
+.TP
 .B \--allow-system-changes
 Run commands even if they can change the system (e.g. load kernel modules).
 .TP
@@ -240,6 +275,19 @@ Set sos to execute as a low priority process so that is does not interfere with
 other processes running on the system. Specific distributions may set their own
 constraints, but by default this involves setting process niceness to 19 and, if
 available, setting an idle IO class via ionice.
+.TP
+.B \--clean, \--cleaner, \--mask
+Enable inline obfuscation/cleaning of the generated report.
+
+When this option is used, the report will be processed to obfuscate sensitive information
+such as hostnames, IP addresses, MAC addresses, and user-specified keywords during generation,
+rather than as a separate post-processing step.
+
+Additional cleaning/masking options (such as \fB--domains\fR, \fB--keywords\fR,
+\fB--map-file\fR, \fB--usernames\fR, etc.) control the cleaning behavior. For
+documentation of all cleaning options, see \fBsos-clean(1)\fR.
+
+.TP
 .B \-z, \--compression-type METHOD
 Override the default compression type specified by the active policy.
 .TP
@@ -484,7 +532,25 @@ For RHEL systems, setting this option to \fBsftp\fR will skip the initial attemp
 upload to the Red Hat Customer Portal, and only attempt an upload to Red Hat's SFTP server,
 which is typically used as a fallback target.
 
-Valid values for PROTO are: 'auto' (default), 'https', 'ftp', 'sftp'.
+Valid values for PROTO are: 'auto' (default), 'https', 'ftp', 'sftp', 's3'.
+.TP
+.B \--upload-s3-endpoint ENDPOINT
+Endpoint to upload to for S3 bucket
+.TP
+.B \--upload-s3-region REGION
+Region to upload to for S3 bucket
+.TP
+.B \--upload-s3-bucket BUCKET
+Name of the S3 bucket to upload to
+.TP
+.B \--upload-s3-access-key KEY
+Access key for the S3 bucket
+.TP
+.B \--upload-s3-secret-key KEY
+Secret key for the S3 bucket
+.TP
+.B \--upload-s3-object-prefix PREFIX
+Prefix for the S3 object/key
 .TP
 .B \--experimental
 Enable plugins marked as experimental. Experimental plugins may not have

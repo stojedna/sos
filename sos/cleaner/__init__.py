@@ -11,10 +11,12 @@
 import hashlib
 import json
 import logging
+import re
 import os
 import shutil
 import fnmatch
 import multiprocessing
+import time
 
 from datetime import datetime
 from pwd import getpwuid
@@ -35,30 +37,41 @@ from sos.cleaner.archives.sos import (SoSReportArchive, SoSReportDirectory,
 from sos.cleaner.archives.generic import DataDirArchive, TarballArchive
 from sos.cleaner.archives.insights import InsightsArchive
 from sos.utilities import (get_human_readable, import_module,
-                           ImporterHelper, is_executable)
+                           ImporterHelper, is_executable, ProgressBar)
 
 
 # an auxiliary method to kick off child processes over its instances
-def _obfuscate_arc_files(arc, input_queue, output_queue):
-    while True:
-        try:
-            file = input_queue.get()
-        except (EOFError, OSError) as e:
-            print(f"Child process exception when reading input queue: '{e}'")
-            break
-        if file is None:  # Sentinel value to stop the process
+def _obfuscate_arc_files(arc, input_queue, output_queue, bytes_done=None):
+    try:
+        while True:
             try:
-                output_queue.put((
-                    arc.files_obfuscated_count,
-                    arc.total_sub_count,
-                    arc.removed_file_count))
-            except OSError as e:
+                item = input_queue.get()
+            except (EOFError, OSError) as e:
                 print(
-                    f"Child process exception when writing to output queue: "
-                    f"'{e}'"
+                    f"Child process exception when reading input "
+                    f"queue: '{e}'"
                 )
-            break
-        arc.obfuscate_arc_file(file)
+                break
+            if item is None:  # Sentinel value to stop the process
+                try:
+                    output_queue.put((
+                        arc.files_obfuscated_count,
+                        arc.total_sub_count,
+                        arc.removed_file_count))
+                except OSError as e:
+                    print(
+                        f"Child process exception when writing to output "
+                        f"queue: '{e}'"
+                    )
+                break
+            file, size = item
+            arc.obfuscate_arc_file(file)
+            if bytes_done is not None:
+                with bytes_done.get_lock():
+                    bytes_done.value += size
+    except KeyboardInterrupt:
+        # catch user's interruption cleanly in the child process
+        pass
 
 
 class SoSCleaner(SoSComponent):
@@ -243,9 +256,9 @@ class SoSCleaner(SoSComponent):
                             "directory")
         if not os.path.exists(self.opts.map_file):
             if self.opts.map_file != default_map:
-                self.log_error(
-                    f"ERROR: map file {self.opts.map_file} does not exist, "
-                    "will not load any obfuscation matches")
+                self.log_info(
+                    f"Default map file {self.opts.map_file} does not exist, "
+                    "will not\nload any obfuscation mapping.")
         else:
             with open(self.opts.map_file, 'r', encoding='utf-8') as mf:
                 try:
@@ -436,6 +449,19 @@ third party.
         for parser in self.parsers:
             if parser.name == 'Hostname Parser':
                 parser.mapping.set_initial_counts()
+
+        # Optimize single-archive cleaning: extract once before prepping
+        # instead of using tarfile.extractfile() for each file during prep,
+        # then extracting the full archive again during obfuscation.
+        # Multi-archive (sos-collect) keeps original prep-before-extract
+        # behavior for cross-archive obfuscation consistency.
+        single_tarball = (len(self.report_paths) == 1
+                          and self.report_paths[0].is_tarfile
+                          and not self.nested_archive)
+        if single_tarball:
+            self.log_debug("Single tarball detected, extracting before prep.")
+            self.report_paths[0].extract()
+
         self.preload_all_archives_into_maps()
         self.generate_parser_item_regexes()
         self.obfuscate_report_paths()
@@ -638,7 +664,7 @@ third party.
                 self.ui_log.warning(
                     "WARNING: certificate files that potentially contain "
                     "sensitive information will\n"
-                    "be CONVERTED to text and OBFUSCATED in the final"
+                    "be CONVERTED to text and OBFUSCATED in the final "
                     "archive.\n"
                 )
             elif self.opts.treat_certificates == "keep":
@@ -747,6 +773,46 @@ third party.
         for prepper in sorted(preps, key=lambda x: x.priority):
             yield prepper(options=self.opts)
 
+    def _prep_load_auditlogs(self):
+        """
+        # Pre-load all audit logs from archives to all applicable preppers.
+        """
+        self.log_debug("Pre-loading audit logs from all archives")
+        parsers_dict = {p.map_file_key.split('_')[0]: p for p in self.parsers}
+        parser_audits_map = []
+        for prepper in self.get_preppers():
+            if prepper.audit_logs_re and prepper.name in parsers_dict.keys():
+                parser_audits_map.append((
+                    prepper.audit_logs_re,
+                    prepper,
+                    parsers_dict[prepper.name]
+                ))
+        for archive in self.report_paths:
+            # archives are not yet extracted so we cant easily iterate over
+            # globbed files. So let assume logrotated files follow just the
+            # most typical scenario: audit.log -> audit.log.1 -> audit.log.2
+            # -> .. . And check just those files till they exist.
+            _file = 'var/log/audit/audit.log'
+            n = 0
+            while True:
+                content = archive.get_file_content(_file)
+                if not content:
+                    break
+                for line in content.splitlines():
+                    try:
+                        for reg, prepper, parser in parser_audits_map:
+                            matches = re.findall(reg, line)
+                            if matches:
+                                for item in matches:
+                                    if item not in prepper.skip_list:
+                                        parser.mapping.add(item)
+                    except Exception as err:
+                        self.log_debug(
+                            f"Failed to prep content from {_file}: {err}"
+                        )
+                n += 1
+                _file = f'var/log/audit/audit.log.{n}'
+
     def preload_all_archives_into_maps(self):
         """Before doing the actual obfuscation, if we have multiple archives
         to obfuscate then we need to preload each of them into the mappings
@@ -757,6 +823,7 @@ third party.
         for prepper in self.get_preppers():
             for archive in self.report_paths:
                 self._prepare_archive_with_prepper(archive, prepper)
+        self._prep_load_auditlogs()
         self.main_archive.set_parsers(self.parsers)
 
     def obfuscate_report(self, archive):  # pylint: disable=too-many-branches
@@ -770,15 +837,13 @@ third party.
 
         def _order_files_by_size(file_list, base_path):
             """ Order files per their sizes, if they are provided relatively
-            to base_path
+            to base_path. Returns list of (file, size) tuples, largest first.
             """
             files_with_sizes = [
                 (f, os.path.getsize(os.path.join(base_path, f)))
                 for f in file_list
             ]
-            files_sizes_sorted = sorted(files_with_sizes, key=lambda x: x[1],
-                                        reverse=True)
-            return [file for file, _ in files_sizes_sorted]
+            return sorted(files_with_sizes, key=lambda x: x[1], reverse=True)
 
         try:
             arc_md = self.cleaner_md.add_section(archive.archive_name)
@@ -790,35 +855,49 @@ third party.
             archive.report_msg("Beginning obfuscation...")
 
             # we will spawn multiprocessing.Process instances that will get
-            # individual files to obfuscate via `input_queue`. Once all files
-            # are sent there, `None` items are pushed to the queue as a
-            # sentinel mark. That triggers the child processes to report back
+            # individual (file, size) pairs to obfuscate via `input_queue`.
+            # Once all pairs are sent there, `None` items are pushed to the
+            # queue as a sentinel mark. That triggers the child processes to
+            # report back
             # to output_queue some stats, and finish.
             files_obfuscated_count = total_sub_count = removed_file_count = 0
             input_queue = multiprocessing.Queue()
             output_queue = multiprocessing.Queue()
+            bytes_done = multiprocessing.Value('L', 0)
 
             # Create and start processes
             processes = []
             for _ in range(self.opts.jobs):
                 p = multiprocessing.Process(
                     target=_obfuscate_arc_files,
-                    args=(archive, input_queue, output_queue)
+                    args=(archive, input_queue, output_queue, bytes_done)
                 )
                 p.start()
                 processes.append(p)
-            # Distribute items to the input queue, after reordering them by
-            # size. Since files can be both relative and absolute paths,
+            # Distribute (file, size) pairs to the input queue, after
+            # reordering them by size. Since files can be both relative and
+            # absolute paths,
             # depending on input tarball or directory, we must pass the
             # relative base_path to call os.path.getsize properly
-            for file in _order_files_by_size(
+            ordered_files = _order_files_by_size(
                 list(archive.get_files()),
                 os.path.dirname(os.path.abspath(archive.extracted_path))
-            ):
-                input_queue.put(file)
+            )
+            total_bytes = sum(size for _, size in ordered_files)
+            for item in ordered_files:
+                input_queue.put(item)
             # Stop processes by sending a sentinel value
             for _ in range(self.opts.jobs):
                 input_queue.put(None)
+            # Display progress bar while child processes obfuscate files
+            if not self.opts.quiet and total_bytes > 0:
+                prefix = f"{archive.ui_name + ' :':<50} "
+                progress = ProgressBar(prefix, total_bytes,
+                                       format_fn=get_human_readable)
+                while bytes_done.value < total_bytes:
+                    progress.update(bytes_done.value)
+                    time.sleep(0.5)
+                progress.finish()
             # Wait for all processes to finish
             for p in processes:
                 p.join()

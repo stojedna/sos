@@ -31,7 +31,9 @@ class Nvidia(Plugin, IndependentPlugin):
             '-q',
             '-q -d ECC',
             'nvlink -s',
-            'nvlink -e'
+            'nvlink -e',
+            'vgpu',
+            'vgpu -q',
         ]
         ctk_subcmds = [
             'cdi list',
@@ -49,5 +51,6 @@ class Nvidia(Plugin, IndependentPlugin):
         self.add_cmd_output(
             f"nvidia-smi --query-retired-pages={querypages} --format=csv"
         )
+        self.add_copy_spec(["/sys/class/mdev_bus", "/sys/bus/mdev"])
 
 # vim: set et ts=4 sw=4 :

@@ -7,13 +7,14 @@
 # See the LICENSE file in the source distribution for further information.
 import os.path
 import tempfile
+import threading
 import unittest
 
 # PYCOMPAT
 from io import StringIO
 
 from sos.utilities import (grep, is_executable, sos_get_command_output,
-                           find, tail, shell_out, tac_logs)
+                           find, tail, shell_out, tac_logs, StdinWriter)
 
 TEST_DIR = os.path.dirname(__file__)
 
@@ -83,6 +84,17 @@ class ExecutableTest(unittest.TestCase):
         result = sos_get_command_output(cmd, chdir=TEST_DIR)
         self.assertEqual(result['status'], 0)
         self.assertTrue(result['output'].strip().endswith(TEST_DIR))
+
+    def test_stdin_str(self):
+        result = sos_get_command_output('/bin/cat', stdin='hello\n')
+        self.assertEqual(result['status'], 0)
+        self.assertEqual(result['output'], 'hello\n')
+
+    def test_stdin_bytes(self):
+        result = sos_get_command_output('/bin/cat', stdin=b'alpha',
+                                        binary=True)
+        self.assertEqual(result['status'], 0)
+        self.assertEqual(result['output'], b'alpha')
 
     def test_shell_out(self):
         self.assertEqual("executed\n", shell_out('echo executed'))
@@ -198,5 +210,27 @@ class TacTest(unittest.TestCase):
 
         self.assertEqual(self.tac_logs_str(tac, True), cat)
         self.assertEqual(self.tac_logs_str(tac, False), cat)
+
+
+class StdinWriterTest(unittest.TestCase):
+
+    def test_write_failure_recorded_as_text(self):
+        thread_errors = []
+
+        def collect(args):
+            thread_errors.append(args.exc_type)
+
+        read_fd, write_fd = os.pipe()
+        os.close(read_fd)
+        original_hook = threading.excepthook
+        threading.excepthook = collect
+        try:
+            writer = StdinWriter(os.fdopen(write_fd, 'wb'), b'sos')
+            writer.join()
+        finally:
+            threading.excepthook = original_hook
+        self.assertEqual(thread_errors, [])
+        self.assertIsInstance(writer.error, str)
+        self.assertNotEqual(writer.error, '')
 
 # vim: set et ts=4 sw=4 :

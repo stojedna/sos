@@ -252,7 +252,7 @@ class ObfuscatedIPv6Network():
         addresses to match the general format/syntax of the address it is
         replacing. For the moment, it is assumed that being able to maintain a
         quick mental note of "unobfuscated device ff00::1 is obfuscated device
-        53ad::a1b2" is more desireable than "ff00::1 is now obfuscated as
+        53ad::a1b2" is more desirable than "ff00::1 is now obfuscated as
         53ad::1234:abcd:9876:a1b2:".
 
         :param addr:        The unobfuscated IPv6 address
@@ -272,8 +272,12 @@ class ObfuscatedIPv6Network():
             _n = self.network_addr.rstrip(':')
             _host = addr.compressed[len(_n):].lstrip(':')
             _ob_host = _generate_address(_host)
-            while _ob_host in self.hosts.values():
-                _ob_host = _generate_address(_host)
+            # When _host is empty, all such addresses map to the obfuscated
+            # network prefix. Regeneration cannot disambiguate them, so do
+            # not retry on collision.
+            if _host:
+                while _ob_host in self.hosts.values():
+                    _ob_host = _generate_address(_host)
             self.add_obfuscated_host_address(addr.compressed, _ob_host)
         return self.hosts[addr.compressed]
 

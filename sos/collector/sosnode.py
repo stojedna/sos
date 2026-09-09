@@ -227,11 +227,11 @@ class SosNode():
                                   f"{self.host.sos_container_name} created")
                     return True
                 self.log_error("Could not start container after create: "
-                               f"{ret['output']}")
+                               f"{self._sanitize_log_msg(ret['output'])}")
                 raise Exception
 
             self.log_error("Could not create container on host: "
-                           f"{res['output']}")
+                           f"{self._sanitize_log_msg(res['output'])}")
             raise Exception
         return False
 
@@ -414,7 +414,7 @@ class SosNode():
             self.log_info(
                 f"using local policy {self.commons['policy'].os_release_name}")
             return self.commons['policy']
-        host = load(cache={}, sysroot=self.opts.sysroot, init=InitSystem(),
+        host = load(sysroot=self.opts.sysroot, init=InitSystem(),
                     probe_runtime=True,
                     remote_exec=self._transport.run_command,
                     remote_check=self.read_file('/etc/os-release'))

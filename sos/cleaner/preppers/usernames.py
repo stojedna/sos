@@ -21,9 +21,15 @@ class UsernamePrepper(SoSPrepper):
     name = 'username'
 
     skip_list = [
+        'ceilometer',
+        'ceph',
+        'cloud-admin',
         'core',
+        'libvirt',
         'nobody',
         'nfsnobody',
+        'nova',
+        'openvswitch',
         'shutdown',
         'stack',
         'reboot',
@@ -34,6 +40,8 @@ class UsernamePrepper(SoSPrepper):
         'username',
         'wtmp',
     ]
+
+    audit_logs_re = r'(?:UID|AUID)=(?:")?(\w+)(?:")?'
 
     def _get_items_for_username(self, archive):
         items = set()

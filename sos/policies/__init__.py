@@ -29,28 +29,29 @@ def import_policy(name):
         return None
 
 
-def load(cache={}, sysroot=None, init=None, probe_runtime=True,
-         remote_exec=None, remote_check=''):
-    if 'policy' in cache:
-        return cache.get('policy')
-
-    import sos.policies.distros
-    helper = ImporterHelper(sos.policies.distros)
-    for module in helper.get_modules():
-        for policy in import_policy(module):
-            if policy.check(remote=remote_check):
-                cache['policy'] = policy(sysroot=sysroot, init=init,
-                                         probe_runtime=probe_runtime,
-                                         remote_exec=remote_exec)
-                break
-
+def load(sysroot=None, init=None, probe_runtime=True, remote_exec=None,
+         remote_check=''):
+    # deal with Linux distros only
     if sys.platform != 'linux':
         raise Exception("SoS is not supported on this platform")
 
-    if 'policy' not in cache:
-        cache['policy'] = sos.policies.distros.GenericLinuxPolicy()
+    import sos.policies.distros
+    helper = ImporterHelper(sos.policies.distros)
+    matches = []
+    for module in helper.get_modules():
+        matches.extend([policy for policy in (import_policy(module) or [])
+                        if policy.check(remote=remote_check)])
+    if matches:
+        matches.sort(key=lambda p: len(p.__mro__), reverse=True)
+        policy = matches[0](sysroot=sysroot, init=init,
+                            probe_runtime=probe_runtime,
+                            remote_exec=remote_exec)
+    else:
+        policy = sos.policies.distros.GenericLinuxPolicy(
+            sysroot=sysroot, init=init, probe_runtime=probe_runtime,
+            remote_exec=remote_exec)
 
-    return cache['policy']
+    return policy
 
 
 class Policy():
@@ -185,8 +186,8 @@ any third party.
     @classmethod
     def set_forbidden_paths(cls):
         """Use this to *append* policy-specifc forbidden paths that apply to
-        all plugins. Setting this classmethod on an invidual policy will *not*
-        override subclass-specific paths
+        all plugins. Setting this classmethod on an individual policy will
+        *not* override subclass-specific paths
         """
         return [
             '*.egg',
@@ -210,7 +211,7 @@ any third party.
 
     def get_preferred_archive(self):
         """
-        Return the class object of the prefered archive format for this
+        Return the class object of the preferred archive format for this
         platform
         """
         from sos.archive import TarFileArchive
@@ -536,7 +537,7 @@ any third party.
         return None
 
     def probe_preset(self):
-        """Return a ``PresetDefaults`` object matching the runing host.
+        """Return a ``PresetDefaults`` object matching the running host.
 
             Stub method to be implemented by derived policy classes.
 

@@ -79,7 +79,7 @@ class SoSPredicate:
 
     A predicate gates the collection of data by an sos plugin. For any
     `add_cmd_output()`, `add_copy_spec()` or `add_journal()` call, the
-    passed predicate will be evaulated and collection will proceed if
+    passed predicate will be evaluated and collection will proceed if
     the result is `True`, and not otherwise.
 
     Predicates may be used to control conditional data collection
@@ -688,7 +688,7 @@ class Plugin():
         determined by either the value provided via the
         plugin.timeout or plugin.cmd-timeout option, the global timeout or
         cmd-timeout options, or the default value set by the plugin or the
-        collection, in that order of precendence.
+        collection, in that order of precedence.
 
         :param optname: The name of the cmdline option being checked, either
                         'plugin_timeout' or 'timeout'
@@ -1346,7 +1346,7 @@ class Plugin():
         :param regexp: A regex to match against the contents of each file
         :type regexp: ``str`` or compiled ``re`` object
 
-        :param subst: The substituion string to be used to replace matches
+        :param subst: The substitution string to be used to replace matches
         :type subst: ``str``
         """
         if not hasattr(pathexp, "match"):
@@ -1684,7 +1684,7 @@ class Plugin():
         :type copyspecs: ``str`` or a ``list`` of strings
 
         :param sizelimit: Limit the total size of collections from `copyspecs`
-                          to this size in MB
+                          to this size in MB. Use 0 for no size limit.
         :type sizelimit: ``int``
 
         :param maxage: Collect files with `mtime` not older than this many
@@ -1953,7 +1953,8 @@ class Plugin():
         :param timeout: Timeout in seconds to allow each `cmd` to run
         :type timeout: ``int``
 
-        :param sizelimit: Maximum amount of output to collect, in MB
+        :param sizelimit: Maximum amount of output to collect, in MB.
+                          Use 0 for no size limit.
         :type sizelimit: ``int``
 
         :param chroot: Should sos chroot the command(s) being run
@@ -2113,7 +2114,7 @@ class Plugin():
                 suggest_filename=suggest_filename
             )
 
-    def add_cmd_output(self, cmds, suggest_filename=None,
+    def add_cmd_output(self, cmds, suggest_filename=None, stdin=None,
                        root_symlink=None, timeout=None, stderr=True,
                        chroot=True, runat=None, env=None, binary=False,
                        sizelimit=None, pred=None, subdir=None,
@@ -2142,6 +2143,9 @@ class Plugin():
         :param timeout: Timeout in seconds to allow each `cmd` to run for
         :type timeout: ``int``
 
+        :param stdin: Supply stdin from this parameter
+        :type stdin: ``str``
+
         :param stderr: Should stderr output be collected
         :type stderr: ``bool``
 
@@ -2157,7 +2161,8 @@ class Plugin():
         :param binary: Is the command expected to produce binary output
         :type binary: ``bool``
 
-        :param sizelimit: Maximum amount of output in MB to save
+        :param sizelimit: Maximum amount of output in MB to save.
+                          Use 0 for no size limit.
         :type sizelimit: ``int``
 
         :param pred: A predicate to gate if `cmds` should be collected or not
@@ -2217,7 +2222,7 @@ class Plugin():
                 ocmd = cmd
                 container_cmd = (ocmd, container)
                 cmd = self.fmt_container_cmd(container, cmd, runtime=runtime,
-                                             runas=runas)
+                                             runas=runas, env=env)
                 if not cmd:
                     self._log_debug(f"Skipping command '{ocmd}' as the "
                                     f"requested container '{container}' does "
@@ -2225,13 +2230,14 @@ class Plugin():
                     continue
             self._add_cmd_output(cmd=cmd, suggest_filename=suggest_filename,
                                  root_symlink=root_symlink, timeout=timeout,
-                                 stderr=stderr, chroot=chroot, runat=runat,
-                                 env=env, binary=binary, sizelimit=sizelimit,
-                                 pred=pred, subdir=subdir, tags=tags,
-                                 changes=changes, foreground=foreground,
-                                 priority=priority, cmd_as_tag=cmd_as_tag,
-                                 to_file=to_file, container_cmd=container_cmd,
-                                 runas=runas, snap_cmd=snap_cmd)
+                                 stdin=stdin, stderr=stderr, chroot=chroot,
+                                 runat=runat, env=env, binary=binary,
+                                 sizelimit=sizelimit, pred=pred, subdir=subdir,
+                                 tags=tags, changes=changes,
+                                 foreground=foreground, priority=priority,
+                                 cmd_as_tag=cmd_as_tag, to_file=to_file,
+                                 container_cmd=container_cmd, runas=runas,
+                                 snap_cmd=snap_cmd)
 
     def add_cmd_tags(self, tagdict):
         """Retroactively add tags to any commands that have been run by this
@@ -2388,7 +2394,7 @@ class Plugin():
         self._log_debug(f"added string as '{filename}'")
 
     def _collect_cmd_output(self, cmd, suggest_filename=None,
-                            root_symlink=False, timeout=None,
+                            root_symlink=False, timeout=None, stdin=None,
                             stderr=True, chroot=True, runat=None, env=None,
                             binary=False, sizelimit=None, subdir=None,
                             changes=False, foreground=False, tags=[],
@@ -2405,13 +2411,15 @@ class Plugin():
                                         archive
             :param root_symlink:        Create a symlink in the archive root
             :param timeout:             Time in seconds to allow a cmd to run
+            :param stdin:               Supply stdin from this parameter.
             :param stderr:              Write stderr to stdout?
             :param chroot:              Perform chroot before running cmd?
             :param runat:               Run the command from this location,
                                         overriding chroot
             :param env:                 Dict of env vars to set for the cmd
             :param binary:              Is the output in binary?
-            :param sizelimit:           Maximum size in MB of output to save
+            :param sizelimit:           Maximum size in MB of output to save.
+                                        Use 0 for no size limit.
             :param subdir:              Subdir in plugin directory to save to
             :param changes:             Does this cmd potentially make a change
                                         on the system?
@@ -2470,7 +2478,7 @@ class Plugin():
         start = time()
 
         result = sos_get_command_output(
-            cmd, timeout=timeout, stderr=stderr, chroot=root,
+            cmd, timeout=timeout, stdin=stdin, stderr=stderr, chroot=root,
             chdir=runat, env=_env, binary=binary, sizelimit=sizelimit,
             poller=self.check_timeout, foreground=foreground,
             to_file=out_file, tac=tac, runas=runas
@@ -2511,7 +2519,8 @@ class Plugin():
                     result = sos_get_command_output(
                         cmd, timeout=timeout, chroot=False, chdir=runat,
                         env=env, binary=binary, sizelimit=sizelimit,
-                        poller=self.check_timeout, to_file=out_file, tac=tac,
+                        stdin=stdin, poller=self.check_timeout,
+                        to_file=out_file, tac=tac,
                     )
                     run_time = time() - start
             self._log_debug(f"could not run '{cmd}': command not found")
@@ -2571,7 +2580,7 @@ class Plugin():
         return result
 
     def collect_cmd_output(self, cmd, suggest_filename=None,
-                           root_symlink=False, timeout=None,
+                           root_symlink=False, timeout=None, stdin=None,
                            stderr=True, chroot=True, runat=None, env=None,
                            binary=False, sizelimit=None, pred=None,
                            changes=False, foreground=False, subdir=None,
@@ -2591,6 +2600,9 @@ class Plugin():
 
         :param timeout:             Time in seconds to allow a cmd to run
         :type timeout: ``int``
+
+        :param stdin:               Supply stdin from this parameter
+        :type stdin: ``str``
 
         :param stderr:              Write stderr to stdout?
         :type stderr: ``bool``
@@ -2641,13 +2653,13 @@ class Plugin():
 
         return self._collect_cmd_output(
             cmd, suggest_filename=suggest_filename, root_symlink=root_symlink,
-            timeout=timeout, stderr=stderr, chroot=chroot, runat=runat,
-            env=env, binary=binary, sizelimit=sizelimit, foreground=foreground,
-            subdir=subdir, tags=tags, runas=runas
+            timeout=timeout, stdin=stdin, stderr=stderr, chroot=chroot,
+            runat=runat, env=env, binary=binary, sizelimit=sizelimit,
+            foreground=foreground, subdir=subdir, tags=tags, runas=runas
         )
 
-    def exec_cmd(self, cmd, timeout=None, stderr=True, chroot=True,
-                 runat=None, env=None, binary=False, pred=None,
+    def exec_cmd(self, cmd, timeout=None, stderr=True, stdin=None, chroot=True,
+                 runat=None, env=None, binary=False, pred=None, sizelimit=None,
                  foreground=False, container=False, quotecmd=False,
                  runas=None, runtime=None):
         """Execute a command right now and return the output and status, but
@@ -2665,6 +2677,9 @@ class Plugin():
         :param stderr:              Write stderr to stdout?
         :type stderr: ``bool``
 
+        :param stdin:               Supply stdin from this parameter
+        :type stdin: ``str``
+
         :param chroot:              Perform chroot before running cmd?
         :type chroot: ``bool``
 
@@ -2680,6 +2695,9 @@ class Plugin():
 
         :param pred:                A predicate to gate execution of the `cmd`
         :type pred: ``SoSPredicate``
+
+        :param sizelimit:           Maximum amount of output in MB to save
+        :type sizelimit: ``int``
 
         :param foreground:          Run the `cmd` in the foreground with a TTY
         :type foreground: ``bool``
@@ -2722,14 +2740,15 @@ class Plugin():
                 return _default
             if self.container_exists(container, runtime) or runas is not None:
                 cmd = self.fmt_container_cmd(container, cmd, quotecmd,
-                                             runtime, runas)
+                                             runtime, runas, env=_env)
             else:
                 self._log_info(f"Cannot run cmd '{cmd}' in container "
                                f"{container}: no such container is running.")
 
         return sos_get_command_output(cmd, timeout=timeout, chroot=root,
                                       chdir=runat, binary=binary, env=_env,
-                                      foreground=foreground, stderr=stderr,
+                                      foreground=foreground, stdin=stdin,
+                                      stderr=stderr, sizelimit=sizelimit,
                                       runas=runas)
 
     def _add_container_file_to_manifest(self, container, path, arcpath, tags):
@@ -2946,7 +2965,7 @@ class Plugin():
                     self.add_cmd_output(cmd, **kwargs)
 
     def fmt_container_cmd(self, container, cmd, quotecmd=False, runtime=None,
-                          runas=None):
+                          runas=None, env=None):
         """Format a command to be executed by the loaded ``ContainerRuntime``
         in a specified container
 
@@ -2967,6 +2986,9 @@ class Plugin():
                             the container really runs (we dont keep them atm)
         :type runas: ``str``
 
+        :param env:         OS environment variables to set in the container
+        :type env: ``dict``
+
         :returns: The command to execute so that the specified `cmd` will run
                   within the `container` and not on the host
         :rtype: ``str``
@@ -2974,7 +2996,7 @@ class Plugin():
         _runtime = self._get_container_runtime(runtime)
         if _runtime and (self.container_exists(container, runtime) or
            runas is not None):
-            return _runtime.fmt_container_cmd(container, cmd, quotecmd)
+            return _runtime.fmt_container_cmd(container, cmd, quotecmd, env)
         return ''
 
     def is_module_loaded(self, module_name):

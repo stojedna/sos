@@ -8,6 +8,7 @@
 #
 # See the LICENSE file in the source distribution for further information.
 
+import json
 import logging
 import os
 import shutil
@@ -36,7 +37,9 @@ def extract_archive(archive_path, tmpdir):
 
         # Guard against "Arbitrary file write during tarfile extraction"
         # Checks the extracted files don't stray out of the target directory.
-        for member in archive.getmembers():
+        not_root = os.getuid() != 0
+        members = archive.getmembers()
+        for member in members:
             member_path = os.path.join(path, member.name)
             abs_directory = os.path.abspath(path)
             abs_target = os.path.abspath(member_path)
@@ -44,7 +47,12 @@ def extract_archive(archive_path, tmpdir):
             if prefix != abs_directory:
                 raise Exception(f"Attempted path traversal in tarfle"
                                 f"{prefix} != {abs_directory}")
-            archive.extract(member, path)
+            # Directories collected from the host may lack u+w or u+x
+            # permissions, preventing child members from being created during
+            # extract
+            if not_root and member.isdir():
+                member.mode |= stat.S_IWUSR | stat.S_IXUSR
+        archive.extractall(path, members=members)
         return os.path.join(path, archive.name.split('/')[-1].split('.tar')[0])
 
 
@@ -74,6 +82,7 @@ class SoSObfuscationArchive():
         self.soslog = logging.getLogger('sos')
         self.ui_log = logging.getLogger('sos_ui')
         self.skip_list = self._load_skip_list()
+        self.packed_dirs = []
         self.is_extracted = False
         self._load_self()
         self.archive_root = ''
@@ -157,6 +166,17 @@ class SoSObfuscationArchive():
         try:
             rel_name = os.path.relpath(filename, start=self.extracted_path)
             if self.should_skip_file(rel_name):
+                return
+            if self.is_packed_dir_tarball(rel_name):
+                # tarballs produced by the report '--pack-dir' option hold
+                # collected data the user explicitly asked to retain. We can't
+                # obfuscate their contents in place, but unlike other binary
+                # files we must not drop them, or that collected data would be
+                # silently lost from the cleaned report.
+                self.log_warn(
+                    f"Keeping packed directory tarball '{rel_name}'; its "
+                    "contents are not obfuscated"
+                )
                 return
             if (not self.keep_binary_files and
                     self.should_remove_file(rel_name)):
@@ -281,6 +301,9 @@ class SoSObfuscationArchive():
     def log_info(self, msg, caller=None):
         self.soslog.info(self._fmt_log_msg(msg, caller))
 
+    def log_warn(self, msg, caller=None):
+        self.soslog.warning(self._fmt_log_msg(msg, caller))
+
     def log_error(self, msg, caller=None):
         self.soslog.error(self._fmt_log_msg(msg, caller))
 
@@ -399,6 +422,7 @@ class SoSObfuscationArchive():
                             os.chmod(fname, stat.S_IRUSR | stat.S_IWUSR)
                 except Exception as err:
                     self.log_debug(f"Error while trying to set perms: {err}")
+        self.packed_dirs = self._load_packed_dirs()
         self.log_debug(f"Extracted path is {self.extracted_path}")
 
     def rename_top_dir(self, new_name):
@@ -586,5 +610,51 @@ class SoSObfuscationArchive():
             return file_is_binary(_full_path)
         # don't fail on dir-level symlinks
         return False
+
+    def _load_packed_dirs(self):
+        """Load the list of directories the report '--pack-dir' option packed
+        into tarballs, as recorded in the archive's manifest, and translate
+        each into the archive-relative path of its tarball (e.g. ``/proc/fs``
+        becomes ``proc/fs.tar``).
+
+        Archives without a manifest, or whose manifest predates the pack-dir
+        feature, yield an empty list, meaning no tarball is treated as
+        packed-dir output.
+
+        :returns:   Archive-relative paths of packed directory tarballs
+        :rtype:     ``list``
+        """
+        manifest = self.get_file_content('sos_reports/manifest.json')
+        if not manifest:
+            return []
+        try:
+            report_md = json.loads(manifest)['components']['report']
+            return [
+                f"{path.rstrip(os.sep).lstrip(os.sep)}.tar"
+                for path in report_md.get('packed_dirs', [])
+            ]
+        except Exception as err:
+            self.log_debug(f"Could not load packed_dirs from manifest: {err}")
+            return []
+
+    def is_packed_dir_tarball(self, rel_name):
+        """Determine if the file is a tarball produced by the report
+        '--pack-dir' option, which collapses a collected directory tree into a
+        single archive member (e.g. ``/proc/fs`` becomes ``proc/fs.tar``),
+        recording it in the manifest's ``packed_dirs`` list.
+
+        Such tarballs are binary and so would otherwise be removed by the
+        cleaner, but they hold collected data the user asked to retain, so the
+        caller keeps them in the archive instead. Tarballs not listed in the
+        manifest are ordinary collected files and are left to the normal
+        removal logic.
+
+        :param rel_name:    Path of the file relative to the archive root
+        :type rel_name:     ``str``
+
+        :returns:   ``True`` if the file is a packed directory tarball
+        :rtype:     ``bool``
+        """
+        return rel_name in self.packed_dirs
 
 # vim: set et ts=4 sw=4 :
